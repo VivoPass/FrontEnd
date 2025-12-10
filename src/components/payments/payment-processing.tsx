@@ -1,3 +1,4 @@
+
 "use client";
 
 import { useState, useEffect, Suspense } from "react";
@@ -5,9 +6,12 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { useSearchParams, useRouter } from "next/navigation";
 import { useToast } from "@/hooks/use-toast";
-import { Loader2, CreditCard, CheckCircle, Circle, AlertTriangle, Wallet } from "lucide-react";
+import { Loader2, CreditCard, CheckCircle, Circle, AlertTriangle, Wallet, ArrowLeft } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription, AlertTitle } from "../ui/alert";
+import type { ApiBooking } from "@/lib/types";
+import { format } from "date-fns";
+import { es } from "date-fns/locale";
 
 type PaymentMethod = {
   idMPago: string;
@@ -19,7 +23,7 @@ type PaymentMethod = {
   predeterminado: boolean;
 };
 
-export function PaymentProcessing() {
+function PaymentForm({ reservaId, eventId, monto }: { reservaId: string, eventId: string, monto: number }) {
   const [paymentMethods, setPaymentMethods] = useState<PaymentMethod[]>([]);
   const [selectedMethod, setSelectedMethod] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -27,18 +31,8 @@ export function PaymentProcessing() {
   const [eventName, setEventName] = useState("");
   const { toast } = useToast();
   const router = useRouter();
-  const searchParams = useSearchParams();
-
-  const reservaId = searchParams.get('reservaId');
-  const eventId = searchParams.get('eventId');
-  const monto = parseFloat(searchParams.get('monto') || '0');
 
   useEffect(() => {
-    if (!reservaId || !eventId || !monto) {
-      setIsLoading(false);
-      return;
-    }
-
     const fetchInitialData = async () => {
       setIsLoading(true);
       const token = localStorage.getItem('accessToken');
@@ -178,24 +172,15 @@ export function PaymentProcessing() {
     );
   };
 
-  if (!reservaId) {
-    return (
-      <div className="flex flex-col items-center justify-center h-96 border-2 border-dashed rounded-lg text-center p-8 mt-4">
-        <Wallet className="h-16 w-16 text-muted-foreground mb-4" />
-        <p className="text-2xl font-semibold text-muted-foreground mb-2">
-          No hay pagos pendientes
-        </p>
-        <p className="text-muted-foreground">
-          Para realizar un pago, primero selecciona una reserva desde la sección "Mis Reservas".
-        </p>
-         <Button onClick={() => router.push('/bookings')} className="mt-6">Ver mis reservas</Button>
-      </div>
-    )
-  }
-
   return (
     <div className="max-w-2xl mx-auto grid gap-8 mt-8">
-      <h1 className="text-3xl font-bold">Procesar Pago de Reserva</h1>
+       <div className="flex items-center gap-4">
+          <Button variant="outline" size="icon" onClick={() => router.push('/payments')}>
+            <ArrowLeft className="h-4 w-4" />
+            <span className="sr-only">Volver</span>
+          </Button>
+          <h1 className="text-3xl font-bold">Procesar Pago de Reserva</h1>
+      </div>
       <Card>
         <CardHeader>
           <CardTitle>Resumen de la Compra</CardTitle>
@@ -250,5 +235,147 @@ export function PaymentProcessing() {
         </CardFooter>
       </Card>
     </div>
-  );
+  )
+}
+
+function PendingPaymentsList() {
+    const [pendingBookings, setPendingBookings] = useState<ApiBooking[]>([]);
+    const [isLoading, setIsLoading] = useState(true);
+    const [error, setError] = useState<string | null>(null);
+    const router = useRouter();
+    const { toast } = useToast();
+
+    useEffect(() => {
+        const fetchPendingBookings = async () => {
+            setIsLoading(true);
+            setError(null);
+            const token = localStorage.getItem('accessToken');
+            const userId = localStorage.getItem('userId');
+
+            if (!token || !userId) {
+                setError("No estás autenticado. Por favor, inicia sesión.");
+                setIsLoading(false);
+                return;
+            }
+
+            try {
+                const response = await fetch(`http://localhost:44335/api/Reservas/usuario/${userId}`, {
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+
+                if (!response.ok) {
+                    throw new Error("No se pudieron cargar las reservas pendientes.");
+                }
+
+                const allBookings: ApiBooking[] = await response.json();
+                const now = new Date();
+                const holdBookings = allBookings.filter(b => b.estado === 'Hold' && new Date(b.expiraEn) > now);
+
+                // Enrich with event names
+                const enrichedBookings = await Promise.all(
+                    holdBookings.map(async (booking) => {
+                        try {
+                            const eventResponse = await fetch(`http://localhost:44335/api/events/${booking.eventId}`, {
+                                headers: { 'Authorization': `Bearer ${token}` }
+                            });
+                            if (eventResponse.ok) {
+                                const eventData = await eventResponse.json();
+                                return { ...booking, eventoNombre: eventData.nombre };
+                            }
+                            return booking;
+                        } catch {
+                            return booking;
+                        }
+                    })
+                );
+
+                setPendingBookings(enrichedBookings);
+
+            } catch (err: any) {
+                setError(err.message);
+                toast({ variant: "destructive", title: "Error", description: err.message });
+            } finally {
+                setIsLoading(false);
+            }
+        };
+
+        fetchPendingBookings();
+    }, [toast]);
+
+    if (isLoading) {
+        return (
+            <div className="flex flex-col items-center justify-center h-96">
+                <Loader2 className="h-10 w-10 animate-spin text-primary" />
+            </div>
+        );
+    }
+    
+    if (error) {
+         return (
+            <div className="flex flex-col items-center justify-center h-96">
+                <Alert variant="destructive" className="max-w-md">
+                    <AlertTriangle className="h-4 w-4" />
+                    <AlertTitle>Error al cargar pagos pendientes</AlertTitle>
+                    <AlertDescription>{error}</AlertDescription>
+                </Alert>
+            </div>
+         )
+    }
+
+    if (pendingBookings.length === 0) {
+        return (
+            <div className="flex flex-col items-center justify-center h-96 border-2 border-dashed rounded-lg text-center p-8 mt-4">
+                <Wallet className="h-16 w-16 text-muted-foreground mb-4" />
+                <p className="text-2xl font-semibold text-muted-foreground mb-2">
+                    No tienes pagos pendientes
+                </p>
+                <p className="text-muted-foreground">
+                    Cuando realices una reserva, aparecerá aquí para que puedas completarla.
+                </p>
+                <Button onClick={() => router.push('/events')} className="mt-6">Explorar Eventos</Button>
+            </div>
+        );
+    }
+    
+    return (
+        <div className="max-w-2xl mx-auto grid gap-6 mt-8">
+             <h1 className="text-3xl font-bold">Pagos Pendientes</h1>
+             <Card>
+                <CardHeader>
+                    <CardTitle>Tus Reservas por Pagar</CardTitle>
+                    <CardDescription>Selecciona una reserva para proceder al pago.</CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                    {pendingBookings.map(booking => (
+                        <div key={booking.reservaId} className="border rounded-lg p-4 flex justify-between items-center hover:bg-muted/50 transition-colors">
+                            <div>
+                                <p className="font-semibold">{booking.eventoNombre || `Evento ${booking.eventId.substring(0,8)}...`}</p>
+                                <p className="text-sm text-muted-foreground">
+                                    Expira: {format(new Date(booking.expiraEn), "dd MMM yyyy, h:mm a", { locale: es })}
+                                </p>
+                                <p className="font-bold mt-1">${booking.precioTotal.toFixed(2)}</p>
+                            </div>
+                            <Button onClick={() => router.push(`/payments?reservaId=${booking.reservaId}&eventId=${booking.eventId}&monto=${booking.precioTotal}`)}>
+                                Pagar ahora
+                            </Button>
+                        </div>
+                    ))}
+                </CardContent>
+             </Card>
+        </div>
+    )
+
+}
+
+export function PaymentProcessing() {
+  const searchParams = useSearchParams();
+  const reservaId = searchParams.get('reservaId');
+  const eventId = searchParams.get('eventId');
+  const monto = parseFloat(searchParams.get('monto') || '0');
+
+  if (reservaId && eventId && monto > 0) {
+    return <PaymentForm reservaId={reservaId} eventId={eventId} monto={monto} />;
+  }
+
+  return <PendingPaymentsList />;
 }

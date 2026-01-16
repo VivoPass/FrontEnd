@@ -1,4 +1,5 @@
 
+
 export type TicketTier = {
   id: string;
   nombre: string;
@@ -80,6 +81,7 @@ export interface ApiBooking {
   eventoFin?: string;
   escenarioNombre?: string;
   escenarioUbicacion?: string;
+  complementaryProducts?: Product[];
 }
 
 export type Payment = {
@@ -111,3 +113,66 @@ export type EnrichedPayment = Payment & {
     anioExpiracion: number;
   } | null;
 };
+
+export type TimeRange = {
+  inicio: string;
+  fin: string;
+};
+
+export type Schedule = {
+  dia: string;
+  rangos: TimeRange[];
+};
+
+export type ComplementaryService = {
+  id: string;
+  nombre: string;
+  tipo: string;
+  descripcion: string;
+  horario: Schedule[];
+  fotoServicio: string;
+};
+
+export type Product = {
+  id: string;
+  idServicio: string;
+  nombre: string;
+  precio: number;
+  cantidad: number;
+  descripcion: string;
+  fotoProducto: string;
+};
+
+export type ServiceBookingRecord = {
+  id: string;
+  idServicio: string;
+  idOrganizador: string;
+  idEvento: string;
+  fechaInicio: string;
+  fechaFin: string;
+};
+
+export type AssociatedService = {
+  bookingId: string;
+  serviceId: string;
+  serviceName: string;
+  serviceType: string;
+  servicePhoto?: string | null;
+  startDate: string;
+  endDate: string;
+};
+
+export type MyServiceBooking = {
+  id: string;
+  idServicio: string;
+  idEvento: string;
+  fechaInicio: string;
+  fechaFin: string;
+  serviceName: string;
+  servicePhoto: string;
+  serviceType: string;
+  eventName: string;
+  eventLugar: string;
+  eventInicio: string;
+};
+    

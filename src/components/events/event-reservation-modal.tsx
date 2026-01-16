@@ -1,4 +1,5 @@
 
+
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
@@ -20,15 +21,18 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Label } from "@/components/ui/label";
-import { Users, Ticket, Tag, Package, Plus, Minus, Loader2, AlertCircle, Building, User, FileText, Link as LinkIcon, CheckCircle } from "lucide-react";
+import { Users, Ticket, Tag, Package, Plus, Minus, Loader2, AlertCircle, Building, User, FileText, Link as LinkIcon, CheckCircle, ShoppingBag } from "lucide-react";
 import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Skeleton } from "@/components/ui/skeleton";
-import type { ApiEvent, Zone, Venue, Organizer, Seat } from "@/lib/types";
+import type { ApiEvent, Zone, Venue, Organizer, Seat, ComplementaryService, Product, ServiceBookingRecord } from "@/lib/types";
 import { useToast } from "@/hooks/use-toast";
 import { useRouter } from "next/navigation";
 import { Input } from "../ui/input";
+import { Card, CardContent } from "../ui/card";
+import { Badge } from "../ui/badge";
+import { Checkbox } from "../ui/checkbox";
 
 type EventReservationModalProps = {
   event: ApiEvent;
@@ -47,7 +51,7 @@ export function EventReservationModal({
   isOpen,
   onClose,
 }: EventReservationModalProps) {
-  const [stage, setStage] = useState<"details" | "reservation">("details");
+  const [stage, setStage] = useState<"details" | "reservation" | "services">("details");
   const [selectedTier, setSelectedTier] = useState<Zone | null>(null);
   const [quantity, setQuantity] = useState(1);
   const [eventDetails, setEventDetails] = useState<DetailedEvent | null>(null);
@@ -56,6 +60,17 @@ export function EventReservationModal({
   const [error, setError] = useState<string | null>(null);
   const [availableSeats, setAvailableSeats] = useState<number | null>(null);
   const [isLoadingAvailability, setIsLoadingAvailability] = useState(false);
+  
+  const [services, setServices] = useState<ComplementaryService[]>([]);
+  const [selectedService, setSelectedService] = useState<ComplementaryService | null>(null);
+  const [isLoadingServices, setIsLoadingServices] = useState(false);
+  const [servicesError, setServicesError] = useState<string | null>(null);
+
+  const [products, setProducts] = useState<Product[]>([]);
+  const [selectedProducts, setSelectedProducts] = useState<Product[]>([]);
+  const [isLoadingProducts, setIsLoadingProducts] = useState(false);
+  const [productsError, setProductsError] = useState<string | null>(null);
+
   const { toast } = useToast();
   const router = useRouter();
 
@@ -147,6 +162,121 @@ export function EventReservationModal({
     }
   };
 
+    const fetchProducts = useCallback(async (serviceId: string) => {
+        setIsLoadingProducts(true);
+        setProductsError(null);
+        setProducts([]);
+        setSelectedProducts([]);
+        const token = localStorage.getItem('accessToken');
+        if (!token) {
+            setProductsError("Sesión expirada: Por favor, inicie sesión nuevamente para continuar con su compra.");
+            setIsLoadingProducts(false);
+            return;
+        }
+
+        try {
+            const response = await fetch(`http://localhost:44335/api/ServComps/Prods/getProductosByIdServicio?idServicio=${serviceId}`, {
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+
+            if (response.ok) {
+                const data: Product[] = await response.json();
+                setProducts(data);
+            } else if (response.status === 401) {
+                throw new Error("Sesión expirada: Por favor, inicie sesión nuevamente para continuar con su compra.");
+            } else {
+                throw new Error("Error al cargar productos: No pudimos obtener la lista de productos en este momento. Inténtelo de nuevo.");
+            }
+        } catch (err: any) {
+            setProductsError(err.message);
+        } finally {
+            setIsLoadingProducts(false);
+        }
+    }, []);
+
+    const handleServiceSelect = (service: ComplementaryService) => {
+        if (selectedService?.id === service.id) {
+            setSelectedService(null);
+            setProducts([]);
+            setSelectedProducts([]);
+            setProductsError(null);
+        } else {
+            setSelectedService(service);
+            fetchProducts(service.id);
+        }
+    };
+
+    const handleProductSelection = (product: Product) => {
+        setSelectedProducts(currentSelected => {
+            const isSelected = currentSelected.some(p => p.id === product.id);
+            if (isSelected) {
+                return currentSelected.filter(p => p.id !== product.id);
+            } else {
+                return [...currentSelected, product];
+            }
+        });
+    };
+
+  const handleGoToServices = async () => {
+    setIsLoadingServices(true);
+    setServicesError(null);
+    const token = localStorage.getItem('accessToken');
+    if (!token) {
+        setServicesError("Error de sesión: Su sesión ha expirado. Por favor, inicie sesión de nuevo para continuar.");
+        setIsLoadingServices(false);
+        return;
+    }
+
+    try {
+        const recordsResponse = await fetch(`http://localhost:44335/api/ServComps/Servs/getRegistrosByIdEvento?idEvento=${event.id}`, {
+            headers: { 'Authorization': `Bearer ${token}` }
+        });
+
+        if (recordsResponse.status === 404) {
+            setServices([]);
+            setStage("services");
+            return;
+        }
+        
+        if (!recordsResponse.ok) {
+            if (recordsResponse.status === 401) {
+                throw new Error("Error de sesión: Su sesión ha expirado. Por favor, inicie sesión de nuevo para continuar.");
+            }
+            throw new Error("Vaya, algo salió mal: No pudimos cargar los servicios adicionales. Inténtelo de nuevo en unos momentos.");
+        }
+        
+        const records: ServiceBookingRecord[] = await recordsResponse.json();
+
+        const enrichedServices = await Promise.all(
+            records.map(async (record) => {
+                const serviceResponse = await fetch(`http://localhost:44335/api/ServComps/Servs/getServicioById?idServicio=${record.idServicio}`, {
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+                if (serviceResponse.ok) {
+                    return serviceResponse.json();
+                }
+                return null;
+            })
+        );
+        
+        const validServices: ComplementaryService[] = enrichedServices.filter(s => s !== null);
+
+        const now = new Date();
+        const availableServices = validServices.filter(service => {
+            const record = records.find(r => r.idServicio === service.id);
+            if (!record) return false;
+            return new Date(record.fechaFin) >= now;
+        });
+        
+        setServices(availableServices);
+        setStage("services");
+    } catch (err: any) {
+        setServicesError(err.message);
+    } finally {
+        setIsLoadingServices(false);
+    }
+  };
+
   const handleQuantityChange = (newQuantity: number) => {
     const maxQuantity = Math.min(availableSeats ?? 10, 10);
     if (newQuantity > 0 && newQuantity <= maxQuantity) {
@@ -154,7 +284,10 @@ export function EventReservationModal({
     }
   };
 
-  const totalPrice = selectedTier ? selectedTier.precio * quantity : 0;
+  const ticketPrice = selectedTier ? selectedTier.precio * quantity : 0;
+  const productsPrice = selectedProducts.reduce((sum, p) => sum + p.precio, 0);
+  const totalPrice = ticketPrice + productsPrice;
+
 
   const handleConfirmReservation = async () => {
     setIsReserving(true);
@@ -175,19 +308,23 @@ export function EventReservationModal({
         return;
     }
 
+    let ticketReservationId: string | null = null;
+
     try {
         if (quantity <= 0) {
             throw new Error("La cantidad de boletos debe ser mayor a 0.");
         }
 
+        // Step 1: Reserve event tickets, now including total price
         const reservaData = {
             eventId: eventDetails.id,
             zonaEventoId: selectedTier.id,
             cantidadBoletos: quantity,
-            usuarioId: usuarioId
+            usuarioId: usuarioId,
+            precioTotal: totalPrice // Send the combined price
         };
 
-        const response = await fetch('http://localhost:44335/api/Reservas/hold', {
+        const ticketResponse = await fetch('http://localhost:44335/api/Reservas/hold', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -196,45 +333,88 @@ export function EventReservationModal({
             body: JSON.stringify(reservaData)
         });
         
-        if (response.ok) {
-            const resultado = await response.json();
+        if (!ticketResponse.ok) {
+            const errorData = await ticketResponse.json().catch(() => ({}));
+            let errorMessage = `Error del servidor: ${ticketResponse.status}`;
+            if (ticketResponse.status === 409 && errorData.message?.includes('No hay asientos suficientes')) {
+                setError("No hay suficientes asientos disponibles en esta zona para la cantidad solicitada.");
+                fetchAvailableSeats(eventDetails.id, selectedTier.id);
+            } else if (ticketResponse.status === 401) {
+                errorMessage = "Tu sesión ha expirado. Por favor, inicia sesión de nuevo.";
+            } else if (ticketResponse.status === 400) {
+                errorMessage = "Datos inválidos para la reserva. Por favor, verifica la información.";
+            } else {
+                errorMessage = errorData.message || errorMessage;
+            }
+            if (ticketResponse.status !== 409) setError(errorMessage);
+            throw new Error("Ticket reservation failed.");
+        }
+        
+        const ticketResult = await ticketResponse.json();
+        // The API returns an array of reservation details, one for each seat.
+        // The reservation ID is the same for all of them.
+        if (Array.isArray(ticketResult) && ticketResult.length > 0 && ticketResult[0].reservaId) {
+            ticketReservationId = ticketResult[0].reservaId;
+        } else {
+            // Handle cases where the response is not as expected.
+            console.error("Unexpected response format from ticket reservation:", ticketResult);
+            throw new Error("No se pudo obtener el ID de la reserva de boletos.");
+        }
+
+        // Step 2: Reserve complementary services/products
+        if (selectedProducts.length > 0) {
+            const serviceReservationData = {
+                idUsuario: usuarioId,
+                idReserva: ticketReservationId,
+                idEvento: eventDetails.id,
+                idsProducto: selectedProducts.map(p => p.id)
+            };
+
+            const serviceResponse = await fetch('http://localhost:44335/api/ServComps/Resv/reservar', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`
+                },
+                body: JSON.stringify(serviceReservationData)
+            });
+
+            if (!serviceResponse.ok) {
+                const serviceErrorData = await serviceResponse.json().catch(() => ({}));
+                let serviceErrorMessage = serviceErrorData.message || "No se pudo confirmar la reserva de servicios.";
+                throw new Error(`SERVICE_BOOKING_FAILED: ${serviceErrorMessage}`);
+            }
+        }
+        
+        // Step 3: Global success
+        toast({
+            title: "✅ ¡Reserva completada!",
+            description: selectedProducts.length > 0
+                ? "Tus entradas y servicios adicionales han sido reservados con éxito."
+                : `Se han reservado ${quantity} boleto(s) para ${eventDetails.nombre}.`,
+        });
+        handleClose();
+        router.push('/bookings');
+
+    } catch (err: any) {
+        if (err.message.startsWith("SERVICE_BOOKING_FAILED")) {
+            const detailedError = err.message.replace("SERVICE_BOOKING_FAILED: ", "");
             toast({
-                title: "✅ Reserva realizada con éxito",
-                description: `Se han reservado ${quantity} boleto(s) para ${eventDetails.nombre}.`,
-                duration: 5000,
+                variant: "destructive",
+                title: "Aviso Importante",
+                description: `Tu entrada se reservó, pero hubo un problema con los servicios adicionales: ${detailedError}. Por favor, contacta a soporte.`,
+                duration: 10000,
             });
             handleClose();
             router.push('/bookings');
-        } else {
-            let errorMessage = `Error del servidor: ${response.status}`;
-            try {
-                const errorData = await response.json();
-                errorMessage = errorData.message || errorMessage;
-                 if (response.status === 409 && errorData.message?.includes('No hay asientos suficientes')) {
-                    setError("No hay suficientes asientos disponibles en esta zona para la cantidad solicitada.");
-                    // Re-fetch availability
-                    fetchAvailableSeats(eventDetails.id, selectedTier.id);
-                }
-            } catch (e) {
-                // Ignore if error body is not JSON
-            }
-            if (response.status !== 409) {
-                 if (response.status === 401) {
-                    errorMessage = "Tu sesión ha expirado. Por favor, inicia sesión de nuevo.";
-                } else if (response.status === 400) {
-                    errorMessage = "Datos inválidos para la reserva. Por favor, verifica la información.";
-                }
-                 setError(errorMessage);
-            }
+        } else if (err.message !== "Ticket reservation failed.") {
+            setError(err.message);
+            toast({
+                variant: "destructive",
+                title: "❌ Error al crear la reserva",
+                description: err.message,
+            });
         }
-
-    } catch (err: any) {
-        setError(err.message);
-        toast({
-            variant: "destructive",
-            title: "❌ Error al crear la reserva",
-            description: err.message,
-        });
     } finally {
         setIsReserving(false);
     }
@@ -250,6 +430,14 @@ export function EventReservationModal({
         setIsLoading(true);
         setError(null);
         setAvailableSeats(null);
+        setServices([]);
+        setSelectedService(null);
+        setIsLoadingServices(false);
+        setServicesError(null);
+        setProducts([]);
+        setSelectedProducts([]);
+        setIsLoadingProducts(false);
+        setProductsError(null);
     }, 300);
   };
   
@@ -387,7 +575,7 @@ export function EventReservationModal({
       return (
         <div className="p-8">
             <DialogHeader className="mb-6">
-              <DialogTitle className="text-3xl font-bold">Confirmar Reserva: {eventDetails.nombre}</DialogTitle>
+              <DialogTitle className="text-3xl font-bold">Reserva: {eventDetails.nombre}</DialogTitle>
               <DialogDescription>Seleccione el tipo de entrada y la cantidad.</DialogDescription>
             </DialogHeader>
             
@@ -449,7 +637,7 @@ export function EventReservationModal({
                     <div className="border-t pt-6 mt-6">
                         <div className="flex justify-between items-center text-2xl font-bold">
                             <span>Precio Total:</span>
-                            <span>${totalPrice.toFixed(2)}</span>
+                            <span>${ticketPrice.toFixed(2)}</span>
                         </div>
                     </div>
                   </>
@@ -466,18 +654,151 @@ export function EventReservationModal({
 
             <DialogFooter className="mt-8 grid grid-cols-2 gap-4">
                 <Button variant="outline" onClick={() => setStage("details")} disabled={isReserving}>Atrás</Button>
-                <Button onClick={handleConfirmReservation} disabled={isReserving || !selectedTier || quantity <= 0 || (availableSeats !== null && quantity > availableSeats)}>
-                    {isReserving ? (
-                        <>
-                            <Loader2 className="mr-2 h-4 w-4 animate-spin"/>
-                            Procesando...
-                        </>
+                <Button onClick={handleGoToServices} disabled={isReserving || !selectedTier || quantity <= 0 || (availableSeats !== null && quantity > availableSeats) || isLoadingServices}>
+                    {isLoadingServices ? (
+                        <><Loader2 className="mr-2 h-4 w-4 animate-spin"/> Cargando...</>
                     ) : (
-                        "Confirmar Reserva"
+                        "Siguiente"
                     )}
                 </Button>
             </DialogFooter>
         </div>
+      );
+    }
+
+    if (stage === "services") {
+      return (
+          <div className="p-8">
+              <DialogHeader className="mb-6">
+                  <DialogTitle className="text-3xl font-bold flex items-center gap-3">
+                      <ShoppingBag className="h-8 w-8 text-primary"/>
+                      Servicios Complementarios
+                  </DialogTitle>
+                  <DialogDescription>Mejora tu experiencia añadiendo uno de estos servicios a tu reserva.</DialogDescription>
+              </DialogHeader>
+  
+              {servicesError && (
+                  <Alert variant="destructive" className="mb-4">
+                      <AlertCircle className="h-4 w-4" />
+                      <AlertTitle>Error al Cargar Servicios</AlertTitle>
+                      <AlertDescription>{servicesError}</AlertDescription>
+                  </Alert>
+              )}
+  
+              <div className="max-h-[50vh] overflow-y-auto pr-2 space-y-4">
+                  {services.length > 0 ? (
+                      services.map(service => (
+                          <Card
+                              key={service.id}
+                              className={`cursor-pointer transition-all ${selectedService?.id === service.id ? 'border-primary ring-2 ring-primary/20' : 'hover:border-muted-foreground/50'}`}
+                              onClick={() => handleServiceSelect(service)}
+                          >
+                              <CardContent className="p-4 flex items-start gap-4">
+                                  <Image src={service.fotoServicio || '/placeholder.png'} alt={service.nombre} width={80} height={80} className="rounded-md aspect-square object-cover bg-muted" />
+                                  <div className="flex-1">
+                                      <h4 className="font-semibold">{service.nombre}</h4>
+                                      <Badge variant="outline" className="my-1">{service.tipo}</Badge>
+                                      <p className="text-xs text-muted-foreground line-clamp-2">{service.descripcion}</p>
+                                  </div>
+                              </CardContent>
+                          </Card>
+                      ))
+                  ) : !servicesError && (
+                      <div className="text-center py-8">
+                          <p className="text-muted-foreground">No hay servicios adicionales disponibles para este evento.</p>
+                      </div>
+                  )}
+
+                    {selectedService && (
+                        <div className="pt-6 mt-6 border-t">
+                            <h3 className="font-semibold text-lg mb-4 flex items-center gap-2">
+                                <Package className="h-5 w-5 text-primary" />
+                                Productos para {selectedService.nombre}
+                            </h3>
+                            {isLoadingProducts ? (
+                                <div className="space-y-3">
+                                    <div className="flex items-center gap-4"><Skeleton className="h-12 w-12 rounded-md" /><div className="flex-1 space-y-2"><Skeleton className="h-4 w-3/4" /><Skeleton className="h-3 w-1/2" /></div></div>
+                                    <div className="flex items-center gap-4"><Skeleton className="h-12 w-12 rounded-md" /><div className="flex-1 space-y-2"><Skeleton className="h-4 w-3/4" /><Skeleton className="h-3 w-1/2" /></div></div>
+                                </div>
+                            ) : productsError ? (
+                                <Alert variant="destructive">
+                                    <AlertCircle className="h-4 w-4" />
+                                    <AlertTitle>Error al cargar productos</AlertTitle>
+                                    <AlertDescription>{productsError}</AlertDescription>
+                                </Alert>
+                            ) : (
+                                <div className="space-y-3">
+                                    {products.length > 0 ? (
+                                        products.map(product => (
+                                            <div key={product.id} className="flex items-center p-2 rounded-md hover:bg-muted/50">
+                                                <Checkbox
+                                                    id={`product-${product.id}`}
+                                                    checked={selectedProducts.some(p => p.id === product.id)}
+                                                    onCheckedChange={() => handleProductSelection(product)}
+                                                    className="mr-4"
+                                                />
+                                                <label htmlFor={`product-${product.id}`} className="flex-1 flex items-center gap-3 cursor-pointer">
+                                                    <Image src={product.fotoProducto || '/placeholder.png'} alt={product.nombre} width={48} height={48} className="rounded-md aspect-square object-cover bg-muted" />
+                                                    <div className="flex-1">
+                                                        <p className="font-semibold">{product.nombre}</p>
+                                                        <p className="text-xs text-muted-foreground line-clamp-1">{product.descripcion}</p>
+                                                    </div>
+                                                    <p className="font-bold text-sm ml-4">${product.precio.toFixed(2)}</p>
+                                                </label>
+                                            </div>
+                                        ))
+                                    ) : (
+                                        <p className="text-sm text-muted-foreground text-center py-4">No hay productos disponibles para este servicio.</p>
+                                    )}
+                                </div>
+                            )}
+                        </div>
+                    )}
+              </div>
+              
+              <div className="border-t pt-6 mt-6">
+                <div className="space-y-1 text-sm">
+                    <div className="flex justify-between">
+                        <span className="text-muted-foreground">{quantity} x {selectedTier?.nombre}</span>
+                        <span>${ticketPrice.toFixed(2)}</span>
+                    </div>
+                    {selectedService && (
+                        <div className="flex justify-between">
+                            <span className="text-muted-foreground">Servicio: {selectedService.nombre}</span>
+                            <span className="text-primary font-medium">Incluido</span>
+                        </div>
+                    )}
+                     {selectedProducts.length > 0 && (
+                        <div className="pl-4 pt-1">
+                            {selectedProducts.map(p => (
+                                <div key={p.id} className="flex justify-between text-muted-foreground">
+                                    <span>- {p.nombre}</span>
+                                    <span>+ ${p.precio.toFixed(2)}</span>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </div>
+                  <div className="flex justify-between items-center text-2xl font-bold mt-4">
+                      <span>Precio Total:</span>
+                      <span>${totalPrice.toFixed(2)}</span>
+                  </div>
+              </div>
+  
+              <DialogFooter className="mt-8 grid grid-cols-2 gap-4">
+                  <Button variant="outline" onClick={() => setStage("reservation")} disabled={isReserving}>Atrás</Button>
+                  <Button onClick={handleConfirmReservation} disabled={isReserving}>
+                      {isReserving ? (
+                          <>
+                              <Loader2 className="mr-2 h-4 w-4 animate-spin"/>
+                              Procesando...
+                          </>
+                      ) : (
+                          "Confirmar Reserva"
+                      )}
+                  </Button>
+              </DialogFooter>
+          </div>
       );
     }
 
@@ -492,4 +813,3 @@ export function EventReservationModal({
     </Dialog>
   );
 }
-

@@ -9,7 +9,7 @@ import { useToast } from "@/hooks/use-toast";
 import { Loader2, CreditCard, CheckCircle, Circle, AlertTriangle, Wallet, ArrowLeft } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription, AlertTitle } from "../ui/alert";
-import type { ApiBooking } from "@/lib/types";
+import type { ApiBooking, Product } from "@/lib/types";
 import { format } from "date-fns";
 import { es } from "date-fns/locale";
 
@@ -17,9 +17,9 @@ type PaymentMethod = {
   idMPago: string;
   idUsuario: string;
   marca: string;
+  ultimos4: string;
   mesExpiracion: number;
   anioExpiracion: number;
-  ultimos4: string;
   predeterminado: boolean;
 };
 
@@ -108,6 +108,43 @@ function PaymentForm({ reservaId, eventId, monto }: { reservaId: string, eventId
       });
       
       if (response.status === 201) {
+        // START: Confirm complementary services reservation
+        try {
+            const compResResponse = await fetch(`http://localhost:44335/api/ServComps/Resv/getReservaByIdReserva?idReserva=${reservaId}`, {
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+
+            if (compResResponse.ok) {
+                const compResData = await compResResponse.json();
+                const complementaryReservationId = compResData.id;
+
+                if (complementaryReservationId) {
+                    const confirmCompResResponse = await fetch(`http://localhost:44335/api/ServComps/Resv/confirmar?idReserva=${complementaryReservationId}`, {
+                        method: 'PUT',
+                        headers: { 'Authorization': `Bearer ${token}` }
+                    });
+
+                    if (!confirmCompResResponse.ok) {
+                        toast({
+                            variant: "destructive",
+                            title: "Error de Sincronización",
+                            description: "Hubo un problema al marcar sus servicios como confirmados. Por favor, guarde su comprobante y revise 'Mis Reservas' en unos minutos.",
+                            duration: 8000
+                        });
+                    }
+                }
+            }
+        } catch (compError) {
+            console.error("Error during complementary service confirmation:", compError);
+            toast({
+                variant: "destructive",
+                title: "Error de Sincronización",
+                description: "Hubo un problema al marcar sus servicios como confirmados. Por favor, guarde su comprobante y revise 'Mis Reservas' en unos minutos.",
+                duration: 8000
+            });
+        }
+        // END: Confirm complementary services reservation
+        
         toast({
           title: "✅ Pago Exitoso",
           description: "Tu reserva ha sido confirmada. Serás redirigido.",
@@ -271,21 +308,42 @@ function PendingPaymentsList() {
                 const now = new Date();
                 const holdBookings = allBookings.filter(b => b.estado === 'Hold' && new Date(b.expiraEn) > now);
 
-                // Enrich with event names
                 const enrichedBookings = await Promise.all(
                     holdBookings.map(async (booking) => {
+                        let eventoNombre = "Evento no disponible";
+                        let complementaryProducts: Product[] = [];
+
                         try {
                             const eventResponse = await fetch(`http://localhost:44335/api/events/${booking.eventId}`, {
                                 headers: { 'Authorization': `Bearer ${token}` }
                             });
                             if (eventResponse.ok) {
                                 const eventData = await eventResponse.json();
-                                return { ...booking, eventoNombre: eventData.nombre };
+                                eventoNombre = eventData.nombre;
                             }
-                            return booking;
-                        } catch {
-                            return booking;
+
+                            const complementaryRes = await fetch(`http://localhost:44335/api/ServComps/Resv/getReservaByIdReserva?idReserva=${booking.reservaId}`, {
+                                headers: { 'Authorization': `Bearer ${token}` }
+                            });
+
+                            if (complementaryRes.ok) {
+                                const complementaryData = await complementaryRes.json();
+                                if (complementaryData && complementaryData.idsProducto && complementaryData.idsProducto.length > 0) {
+                                    const productPromises = complementaryData.idsProducto.map((productId: string) => 
+                                    fetch(`http://localhost:44335/api/ServComps/Prods/getProductoById?id=${productId}`, {
+                                        headers: { 'Authorization': `Bearer ${token}` }
+                                    }).then(res => res.ok ? res.json() : null)
+                                    );
+                                    
+                                    const fetchedProducts = await Promise.all(productPromises);
+                                    complementaryProducts = fetchedProducts.filter((p): p is Product => p !== null);
+                                }
+                            }
+                        } catch (e) {
+                            console.error(`Error enriching booking ${booking.reservaId}:`, e);
                         }
+
+                        return { ...booking, eventoNombre, complementaryProducts };
                     })
                 );
 
@@ -346,20 +404,25 @@ function PendingPaymentsList() {
                     <CardDescription>Selecciona una reserva para proceder al pago.</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
-                    {pendingBookings.map(booking => (
-                        <div key={booking.reservaId} className="border rounded-lg p-4 flex justify-between items-center hover:bg-muted/50 transition-colors">
-                            <div>
-                                <p className="font-semibold">{booking.eventoNombre || `Evento ${booking.eventId.substring(0,8)}...`}</p>
-                                <p className="text-sm text-muted-foreground">
-                                    Expira: {format(new Date(booking.expiraEn), "dd MMM yyyy, h:mm a", { locale: es })}
-                                </p>
-                                <p className="font-bold mt-1">${booking.precioTotal.toFixed(2)}</p>
+                    {pendingBookings.map(booking => {
+                        const productsTotal = booking.complementaryProducts?.reduce((sum, p) => sum + p.precio, 0) || 0;
+                        const grandTotal = booking.precioTotal + productsTotal;
+
+                        return (
+                            <div key={booking.reservaId} className="border rounded-lg p-4 flex justify-between items-center hover:bg-muted/50 transition-colors">
+                                <div>
+                                    <p className="font-semibold">{booking.eventoNombre || `Evento ${booking.eventId.substring(0,8)}...`}</p>
+                                    <p className="text-sm text-muted-foreground">
+                                        Expira: {format(new Date(booking.expiraEn), "dd MMM yyyy, h:mm a", { locale: es })}
+                                    </p>
+                                    <p className="font-bold mt-1">${grandTotal.toFixed(2)}</p>
+                                </div>
+                                <Button onClick={() => router.push(`/payments?reservaId=${booking.reservaId}&eventId=${booking.eventId}&monto=${grandTotal}`)}>
+                                    Pagar ahora
+                                </Button>
                             </div>
-                            <Button onClick={() => router.push(`/payments?reservaId=${booking.reservaId}&eventId=${booking.eventId}&monto=${booking.precioTotal}`)}>
-                                Pagar ahora
-                            </Button>
-                        </div>
-                    ))}
+                        )
+                    })}
                 </CardContent>
              </Card>
         </div>
@@ -379,3 +442,5 @@ export function PaymentProcessing() {
 
   return <PendingPaymentsList />;
 }
+
+    
